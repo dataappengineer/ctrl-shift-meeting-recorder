@@ -1,10 +1,11 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import openai
+import whisper
 from github import Github
 import os
 from datetime import datetime
 import logging
+import tempfile
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -14,15 +15,17 @@ app = Flask(__name__)
 CORS(app)  # Allow extension to call this API
 
 # Load environment variables
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 GITHUB_REPO = "dataappengineer/ctrl-shift-call-transcripts"
 
-if not OPENAI_API_KEY or not GITHUB_TOKEN:
+if not GITHUB_TOKEN:
     logger.error("Missing required environment variables!")
-    raise ValueError("OPENAI_API_KEY and GITHUB_TOKEN must be set")
+    raise ValueError("GITHUB_TOKEN must be set")
 
-openai.api_key = OPENAI_API_KEY
+# Load Whisper model at startup (using 'base' model for balance of speed and accuracy)
+logger.info("Loading Whisper model (this may take a minute on first run)...")
+whisper_model = whisper.load_model("base")
+logger.info("Whisper model loaded successfully")
 
 @app.route('/health', methods=['GET'])
 def health():
@@ -45,15 +48,22 @@ def transcribe_and_commit():
         
         logger.info(f"Processing recording: {meeting_title} ({duration}s)")
         
-        # 2. Transcribe with Whisper
-        logger.info("Transcribing with Whisper API...")
-        transcript_response = openai.Audio.transcribe(
-            model="whisper-1",
-            file=audio_file,
-            response_format="text"
-        )
+        # 2. Transcribe with local Whisper (free)
+        logger.info("Transcribing with local Whisper (free)...")
         
-        transcript_text = transcript_response if isinstance(transcript_response, str) else transcript_response.get('text', '')
+        # Save uploaded file to temporary location
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.webm') as temp_audio:
+            audio_file.save(temp_audio.name)
+            temp_path = temp_audio.name
+        
+        try:
+            # Transcribe using local Whisper model
+            result = whisper_model.transcribe(temp_path)
+            transcript_text = result["text"]
+        finally:
+            # Clean up temporary file
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
         
         logger.info(f"Transcription complete. Length: {len(transcript_text)} chars")
         
@@ -62,7 +72,7 @@ def transcribe_and_commit():
 
 **Date:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  
 **Duration:** {duration} seconds  
-**Transcription:** OpenAI Whisper API
+**Transcription:** Local Whisper (free)
 
 ---
 

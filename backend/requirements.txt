@@ -1,5 +1,10 @@
 flask==3.0.0
 flask-cors==4.0.0
-openai==1.12.0
+openai-whisper==20231117
 PyGithub==2.1.1
 python-dotenv==1.0.0
+
+# Note: Whisper requires ffmpeg to be installed on your system
+# Mac: brew install ffmpeg
+# Ubuntu/Debian: sudo apt install ffmpeg
+# Windows: Download from https://ffmpeg.org/download.html

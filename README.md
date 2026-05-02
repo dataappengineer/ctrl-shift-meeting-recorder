@@ -1,14 +1,16 @@
 # Ctrl+Shift Meeting Recorder
 
-A Chrome extension that records Google Meet audio, transcribes it with OpenAI Whisper, and automatically commits transcripts to GitHub.
+A Chrome extension that records Google Meet audio, transcribes it with **free local Whisper**, and automatically commits transcripts to GitHub.
 
 ## Features
 
 - 🎙️ **One-click recording** of Google Meet audio
-- 🤖 **Automatic transcription** using OpenAI Whisper API
+- 🤖 **Automatic transcription** using free local Whisper (no API costs!)
+- 💰 **100% Free** - no OpenAI API subscription needed
+- 🔒 **Privacy-first** - all processing happens locally on your machine
 - 📝 **Auto-commit to GitHub** - transcripts saved to [`ctrl-shift-call-transcripts`](https://github.com/dataappengineer/ctrl-shift-call-transcripts)
 - 🔔 **Desktop notifications** when transcripts are ready
-- 💪 **Offline-first** - works with local Flask backend
+- 💪 **Offline-capable** - works with local Flask backend
 
 ## System Architecture
 
@@ -23,7 +25,10 @@ This is **System 1** of a two-part workflow:
 
 - Google Chrome browser
 - Python 3.8+ installed
-- OpenAI API key ([get one here](https://platform.openai.com/api-keys))
+- **ffmpeg** installed (required by Whisper)
+  - **Mac:** `brew install ffmpeg`
+  - **Ubuntu/Debian:** `sudo apt install ffmpeg`
+  - **Windows:** Download from [ffmpeg.org](https://ffmpeg.org/download.html)
 - GitHub Personal Access Token with `repo` scope ([create here](https://github.com/settings/tokens))
 
 ### Backend Setup
@@ -40,30 +45,44 @@ This is **System 1** of a two-part workflow:
    source venv/bin/activate  # On Windows: venv\Scripts\activate
    ```
 
-3. **Install dependencies:**
+3. **Install ffmpeg** (if not already installed):
+   ```bash
+   # Mac
+   brew install ffmpeg
+   
+   # Ubuntu/Debian
+   sudo apt install ffmpeg
+   
+   # Windows: Download from https://ffmpeg.org/download.html
+   ```
+
+4. **Install dependencies:**
    ```bash
    pip install -r requirements.txt
    ```
+   
+   **Note:** First run will download the Whisper model (~140MB). This is a one-time download.
 
-4. **Configure environment variables:**
+5. **Configure environment variables:**
    ```bash
    cp .env.example .env
-   nano .env  # Edit with your API keys
+   nano .env  # Edit with your GitHub token
    ```
 
-   Add your keys:
+   Add your GitHub token:
    ```
-   OPENAI_API_KEY=sk-proj-...
    GITHUB_TOKEN=ghp_...
    ```
 
-5. **Start the server:**
+6. **Start the server:**
    ```bash
    python transcription_server.py
    ```
 
    You should see:
    ```
+   Loading Whisper model (this may take a minute on first run)...
+   Whisper model loaded successfully
    Starting Transcription Server on http://localhost:5000
    ```
 
@@ -103,7 +122,7 @@ This is **System 1** of a two-part workflow:
    - The extension will:
      - Stop recording
      - Upload audio to the backend
-     - Transcribe with Whisper
+     - Transcribe with local Whisper (this takes 5-10 minutes for a 1-hour meeting)
      - Commit transcript to GitHub
    - You'll get a desktop notification when complete
 
@@ -125,10 +144,12 @@ After the transcript is committed, use VS Code Copilot to summarize it:
 
 | Component | Cost per 1-hour meeting |
 |-----------|-------------------------|
-| Whisper API | ~$0.36 |
+| Whisper (local) | **$0.00** (100% free!) |
 | GitHub API | Free |
 | Backend hosting | Free (local) |
-| **Total** | **~$0.36** |
+| **Total** | **$0.00** |
+
+**Processing time:** ~5-10 minutes for a 1-hour meeting (depending on your CPU)
 
 ## Troubleshooting
 
@@ -139,13 +160,19 @@ After the transcript is committed, use VS Code Copilot to summarize it:
 
 ### "Upload failed"
 - Make sure the backend server is running (`python transcription_server.py`)
-- Check that `.env` file has correct API keys
+- Check that `.env` file has your GitHub token
 - Look at terminal logs for error messages
 
 ### "Server error: 500"
 - Check backend terminal for error details
-- Verify OpenAI API key is valid
 - Verify GitHub token has `repo` scope
+- Check if ffmpeg is installed: `ffmpeg -version`
+- Ensure you have enough disk space and RAM (Whisper needs ~2GB RAM)
+
+### "ffmpeg not found" or transcription errors
+- Install ffmpeg using the commands in Prerequisites section
+- Restart the backend server after installing ffmpeg
+- On Windows, ensure ffmpeg is in your PATH
 
 ### Audio quality issues
 - Use headphones to prevent echo/feedback
