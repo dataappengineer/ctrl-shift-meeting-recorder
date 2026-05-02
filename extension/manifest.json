@@ -1,0 +1,38 @@
+{
+  "manifest_version": 3,
+  "name": "Ctrl+Shift Meeting Recorder",
+  "version": "1.0.0",
+  "description": "Record Google Meet audio, transcribe with Whisper, commit to GitHub",
+  "permissions": [
+    "tabCapture",
+    "activeTab",
+    "storage",
+    "notifications"
+  ],
+  "host_permissions": [
+    "https://meet.google.com/*",
+    "http://localhost:5000/*"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://meet.google.com/*"],
+      "js": ["content.js"]
+    }
+  ],
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}
