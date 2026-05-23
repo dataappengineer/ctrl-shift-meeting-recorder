@@ -6,6 +6,10 @@ import os
 from datetime import datetime
 import logging
 import tempfile
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -57,15 +61,39 @@ def transcribe_and_commit():
             temp_path = temp_audio.name
         
         try:
+            # Check file size
+            file_size = os.path.getsize(temp_path)
+            logger.info(f"Audio file saved: {file_size} bytes")
+            
+            if file_size < 1000:
+                logger.warning(f"Audio file is very small ({file_size} bytes) - may be empty or corrupt")
+            
             # Transcribe using local Whisper model
-            result = whisper_model.transcribe(temp_path)
-            transcript_text = result["text"]
+            logger.info("Starting Whisper transcription...")
+            result = whisper_model.transcribe(temp_path, fp16=False)
+            transcript_text = result["text"].strip()
+            
+            # Log detailed result info
+            logger.info(f"Whisper result - Language: {result.get('language', 'unknown')}")
+            logger.info(f"Whisper detected {len(result.get('segments', []))} segments")
+            
+            if not transcript_text:
+                logger.warning("⚠️ Transcription is EMPTY - no speech detected in audio")
+                logger.warning("This usually means: 1) Audio was silent, 2) Wrong audio source, or 3) Audio format issue")
+                
         finally:
             # Clean up temporary file
             if os.path.exists(temp_path):
                 os.unlink(temp_path)
         
         logger.info(f"Transcription complete. Length: {len(transcript_text)} chars")
+        
+        # Check if transcript is empty
+        if not transcript_text:
+            return jsonify({
+                "success": False,
+                "error": "Transcription is empty. No speech was detected in the audio. Make sure you're speaking during the recording and that your microphone/audio is working."
+            }), 400
         
         # 3. Format markdown content
         content = f"""# {meeting_title}

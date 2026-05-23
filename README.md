@@ -4,13 +4,15 @@ A Chrome extension that records Google Meet audio, transcribes it with **free lo
 
 ## Features
 
-- 🎙️ **One-click recording** of Google Meet audio
+- 🎙️ **One-click recording** of Google Meet audio (both sides of conversation!)
+- 🎤 **Captures your microphone** + 🔊 **tab audio** (other participants)
 - 🤖 **Automatic transcription** using free local Whisper (no API costs!)
-- 💰 **100% Free** - no OpenAI API subscription needed
+- 💰 **100% Free** - $0/hour vs OpenAI API $0.36/hour
 - 🔒 **Privacy-first** - all processing happens locally on your machine
 - 📝 **Auto-commit to GitHub** - transcripts saved to [`ctrl-shift-call-transcripts`](https://github.com/dataappengineer/ctrl-shift-call-transcripts)
 - 🔔 **Desktop notifications** when transcripts are ready
 - 💪 **Offline-capable** - works with local Flask backend
+- ⚡ **Offscreen audio mixing** - combines both audio sources seamlessly
 
 ## System Architecture
 
@@ -115,8 +117,11 @@ This is **System 1** of a two-part workflow:
    - Example: "Q1 Strategy Review" or "Client Discovery Call"
 
 4. **Click "Start Recording"**
-   - You'll see a "Recording..." status
-   - The extension captures audio from the active tab only
+   - You'll see "🔴 Recording both sides of conversation..."
+   - The extension captures:
+     - **Your voice** (microphone)
+     - **Other participants** (tab audio from Google Meet)
+   - Both audio sources are mixed together seamlessly
 
 5. **When the meeting ends, click "Stop & Upload"**
    - The extension will:

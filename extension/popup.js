@@ -1,5 +1,3 @@
-let mediaRecorder;
-let audioChunks = [];
 let recordingStartTime;
 
 const startBtn = document.getElementById('startBtn');
@@ -15,69 +13,74 @@ async function startRecording() {
     // Get active tab
     const [tab] = await chrome.tabs.query({active: true, currentWindow: true});
     
+    console.log('Active tab:', tab.id, tab.url);
+    
     // Check if on Google Meet
-    if (!tab.url.includes('meet.google.com')) {
+    if (!tab.url || !tab.url.includes('meet.google.com')) {
       updateStatus('⚠️ Please open a Google Meet tab first', 'warning');
       return;
     }
     
-    // Request tab audio capture
-    chrome.tabCapture.capture({audio: true}, (stream) => {
-      if (!stream) {
-        updateStatus('❌ Failed to capture audio. Try reloading the Meet tab.', 'error');
-        return;
-      }
-      
-      mediaRecorder = new MediaRecorder(stream, {mimeType: 'audio/webm'});
-      audioChunks = [];
+    updateStatus('🎤 Starting recording (Mic + Tab Audio)...', 'processing');
+    
+    // Send message to background to start recording
+    const response = await chrome.runtime.sendMessage({ 
+      action: 'startRecording',
+      tabId: tab.id
+    });
+    
+    if (response && response.success) {
       recordingStartTime = Date.now();
-      
-      mediaRecorder.ondataavailable = (e) => {
-        if (e.data.size > 0) {
-          audioChunks.push(e.data);
-        }
-      };
-      
-      mediaRecorder.onstop = handleRecordingStop;
-      
-      mediaRecorder.start();
-      
-      // Update UI
       startBtn.disabled = true;
       stopBtn.disabled = false;
-      updateStatus('🔴 Recording... (click Stop when done)', 'recording');
-    });
+      updateStatus('🔴 Recording both sides of conversation... Click Stop when done', 'recording');
+    } else {
+      throw new Error(response?.error || 'Failed to start recording');
+    }
   } catch (error) {
     console.error('Error starting recording:', error);
-    updateStatus('❌ Error: ' + error.message, 'error');
+    updateStatus('❌ ' + error.message, 'error');
   }
 }
 
-function stopRecording() {
-  if (mediaRecorder && mediaRecorder.state !== 'inactive') {
-    mediaRecorder.stop();
+async function stopRecording() {
+  try {
+    updateStatus('⏳ Stopping recording...', 'processing');
     
-    // Stop all tracks
-    mediaRecorder.stream.getTracks().forEach(track => track.stop());
+    // Send message to background to stop recording
+    const response = await chrome.runtime.sendMessage({ action: 'stopRecording' });
+    
+    if (!response || !response.success) {
+      throw new Error(response?.error || 'Failed to stop recording');
+    }
+    
+    const recordingDuration = Math.round((Date.now() - recordingStartTime) / 1000);
+    const audioSizeMB = (response.size / 1024 / 1024).toFixed(2);
+    
+    console.log(`Recording stopped. Duration: ${recordingDuration}s, Size: ${audioSizeMB}MB`);
     
     updateStatus('⏳ Processing and uploading...', 'processing');
+    
+    // Convert base64 data URL back to Blob
+    const base64Data = response.audioData.split(',')[1];
+    const binaryData = atob(base64Data);
+    const arrayBuffer = new Uint8Array(binaryData.length);
+    for (let i = 0; i < binaryData.length; i++) {
+      arrayBuffer[i] = binaryData.charCodeAt(i);
+    }
+    const audioBlob = new Blob([arrayBuffer], { type: 'audio/webm' });
+    
+    // Get meeting title
+    const meetingTitle = meetingTitleInput.value.trim() || 'Meeting';
+    
+    // Upload to backend
+    await uploadRecording(audioBlob, meetingTitle, recordingDuration);
+    
+  } catch (error) {
+    console.error('Error stopping recording:', error);
+    updateStatus('❌ Error: ' + error.message, 'error');
+    resetUI();
   }
-}
-
-async function handleRecordingStop() {
-  const recordingDuration = Math.round((Date.now() - recordingStartTime) / 1000);
-  
-  // Create blob from chunks
-  const audioBlob = new Blob(audioChunks, {type: 'audio/webm'});
-  const audioSizeMB = (audioBlob.size / 1024 / 1024).toFixed(2);
-  
-  console.log(`Recording stopped. Duration: ${recordingDuration}s, Size: ${audioSizeMB}MB`);
-  
-  // Get meeting title
-  const meetingTitle = meetingTitleInput.value.trim() || 'Meeting';
-  
-  // Upload to backend
-  await uploadRecording(audioBlob, meetingTitle, recordingDuration);
 }
 
 async function uploadRecording(audioBlob, meetingTitle, duration) {
