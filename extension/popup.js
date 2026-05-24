@@ -33,7 +33,20 @@ async function startRecording() {
       recordingStartTime = Date.now();
       startBtn.disabled = true;
       stopBtn.disabled = false;
-      updateStatus('🔴 Recording both sides of conversation... Click Stop when done', 'recording');
+      
+      // Show what's being recorded
+      let statusMsg = '🔴 Recording: ';
+      if (response.hasMic && response.hasTabAudio) {
+        statusMsg += 'Your voice + Tab audio ✅';
+      } else if (response.hasMic) {
+        statusMsg += 'Your voice only (no tab audio) ⚠️';
+      } else if (response.hasTabAudio) {
+        statusMsg += 'Tab audio only (mic blocked!) ⚠️';
+      } else {
+        statusMsg += 'Unknown sources';
+      }
+      
+      updateStatus(statusMsg, 'recording');
     } else {
       throw new Error(response?.error || 'Failed to start recording');
     }

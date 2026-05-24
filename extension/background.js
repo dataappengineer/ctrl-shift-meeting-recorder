@@ -4,7 +4,6 @@
 console.log('Background service worker started');
 
 let offscreenDocumentReady = false;
-let currentTabStream = null;
 
 // Create offscreen document on install
 chrome.runtime.onInstalled.addListener(async () => {
@@ -38,7 +37,14 @@ async function ensureOffscreenDocument() {
 
 // Listen for messages from popup
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-  console.log('Background received message:', request.action);
+  console.log('Background received message:', request.action || request.type);
+  
+  // Handle offscreen-ready signal
+  if (request.type === 'offscreen-ready') {
+    offscreenDocumentReady = true;
+    console.log('✅ Offscreen document is ready');
+    return;
+  }
   
   if (request.action === 'startRecording') {
     startRecording(request.tabId)
@@ -63,50 +69,41 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
 async function startRecording(tabId) {
   try {
-    console.log('Starting recording for tab:', tabId);
+    console.log('=== Starting recording for tab:', tabId);
     
     // Ensure offscreen document exists
     await ensureOffscreenDocument();
     
-    // Capture tab audio
-    console.log('Capturing tab audio...');
-    const tabStream = await new Promise((resolve, reject) => {
-      chrome.tabCapture.capture(
-        { audio: true, video: false },
-        (stream) => {
-          if (chrome.runtime.lastError) {
-            reject(new Error(chrome.runtime.lastError.message));
-            return;
-          }
-          if (!stream) {
-            reject(new Error('No stream returned from tabCapture'));
-            return;
-          }
-          resolve(stream);
-        }
-      );
+    // MV3 API: Get stream ID (not the actual stream)
+    console.log('Getting media stream ID...');
+    const streamId = await chrome.tabCapture.getMediaStreamId({
+      targetTabId: tabId
     });
     
-    console.log('Tab audio captured, starting offscreen recording...');
-    currentTabStream = tabStream;
+    console.log('✅ Got streamId:', streamId);
     
-    // Forward tab stream to offscreen document via message
-    // Note: We can't pass MediaStream directly, so offscreen will handle both
+    // Send streamId to offscreen document for actual capture
+    console.log('Sending streamId to offscreen document...');
     const response = await chrome.runtime.sendMessage({
       action: 'startMixedRecording',
       target: 'offscreen',
-      hasTabAudio: true
+      streamId: streamId
     });
     
     if (!response || !response.success) {
       throw new Error(response?.error || 'Offscreen recording failed');
     }
     
-    console.log('Recording started successfully');
-    return { success: true, message: 'Recording both mic + tab audio' };
+    console.log('✅ Recording started successfully:', response.message);
+    return { 
+      success: true, 
+      message: response.message,
+      hasTabAudio: response.hasTabAudio,
+      hasMic: response.hasMic
+    };
     
   } catch (error) {
-    console.error('Recording error:', error);
+    console.error('❌ Recording error:', error);
     cleanup();
     throw error;
   }
@@ -114,21 +111,25 @@ async function startRecording(tabId) {
 
 async function stopRecording() {
   try {
-    console.log('Stopping recording...');
+    console.log('=== BACKGROUND: Stopping recording ===');
     
     // Ask offscreen to stop and return audio
+    console.log('Sending stopMixedRecording message to offscreen...');
     const response = await chrome.runtime.sendMessage({
       action: 'stopMixedRecording',
       target: 'offscreen'
     });
     
+    console.log('Offscreen response:', response);
+    
     cleanup();
     
     if (!response || !response.success) {
+      console.error('❌ Offscreen returned error:', response?.error);
       throw new Error(response?.error || 'Failed to stop recording');
     }
     
-    console.log('Recording stopped, audio size:', response.size);
+    console.log('✅ Recording stopped successfully, audio size:', response.size);
     return response;
     
   } catch (error) {
@@ -139,9 +140,7 @@ async function stopRecording() {
 }
 
 function cleanup() {
-  if (currentTabStream) {
-    currentTabStream.getTracks().forEach(track => track.stop());
-    currentTabStream = null;
-  }
+  // No cleanup needed in background - streams are in offscreen document
+  console.log('Background cleanup complete');
 }
 
