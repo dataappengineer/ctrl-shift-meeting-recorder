@@ -177,3 +177,24 @@ body {
 .footer a:hover {
   text-decoration: underline;
 }
+
+.force-stop-container {
+  text-align: center;
+  margin-bottom: 12px;
+}
+
+.btn-link {
+  background: none;
+  border: none;
+  color: #6b7280;
+  font-size: 12px;
+  cursor: pointer;
+  padding: 6px 12px;
+  border-radius: 6px;
+  transition: all 0.2s;
+}
+
+.btn-link:hover {
+  background: #f3f4f6;
+  color: #ef4444;
+}

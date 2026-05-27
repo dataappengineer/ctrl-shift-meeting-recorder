@@ -2,11 +2,73 @@ let recordingStartTime;
 
 const startBtn = document.getElementById('startBtn');
 const stopBtn = document.getElementById('stopBtn');
+const forceStopBtn = document.getElementById('forceStopBtn');
+const forceStopContainer = document.getElementById('forceStopContainer');
 const statusDiv = document.getElementById('status');
 const meetingTitleInput = document.getElementById('meetingTitle');
 
 startBtn.addEventListener('click', startRecording);
 stopBtn.addEventListener('click', stopRecording);
+forceStopBtn.addEventListener('click', forceStop);
+
+// Check recording state when popup opens
+chrome.runtime.sendMessage({ action: 'getRecordingState' }, (state) => {
+  if (state && state.isRecording) {
+    // Recording is active, show stop button
+    startBtn.disabled = true;
+    stopBtn.disabled = false;
+    forceStopContainer.style.display = 'block';
+    recordingStartTime = state.startTime;
+    const duration = Math.floor((Date.now() - state.startTime) / 1000);
+    updateStatus(`🔴 Recording in progress (${duration}s)... Click Stop when done`, 'recording');
+  }
+});
+
+async function forceStop() {
+  try {
+    if (!confirm('Force stop will clear the recording without saving. Continue?')) {
+      return;
+    }
+    
+    updateStatus('🔧 Force stopping...', 'processing');
+    
+    let response;
+    try {
+      response = await chrome.runtime.sendMessage({ action: 'forceStopRecording' });
+    } catch (msgError) {
+      console.error('Message error:', msgError);
+      // Even if messaging fails, try to reset UI
+      response = { success: true, message: 'Reset (messaging failed)' };
+    }
+    
+    if (response && response.success) {
+      updateStatus('✅ ' + (response.message || 'Cleanup complete'), 'success');
+      startBtn.disabled = false;
+      stopBtn.disabled = true;
+      forceStopContainer.style.display = 'none';
+      
+      // Also clear local storage just in case
+      try {
+        await chrome.storage.local.remove('recordingState');
+      } catch (e) {
+        console.warn('Could not clear storage:', e);
+      }
+      
+      setTimeout(() => {
+        updateStatus('Ready to record', 'idle');
+      }, 2000);
+    } else {
+      throw new Error(response?.error || 'Force stop failed');
+    }
+  } catch (error) {
+    console.error('Force stop error:', error);
+    updateStatus('⚠️ ' + error.message + ' - Try reloading extension', 'warning');
+    // Force reset UI anyway
+    startBtn.disabled = false;
+    stopBtn.disabled = true;
+    forceStopContainer.style.display = 'none';
+  }
+}
 
 async function startRecording() {
   try {
@@ -33,6 +95,7 @@ async function startRecording() {
       recordingStartTime = Date.now();
       startBtn.disabled = true;
       stopBtn.disabled = false;
+      forceStopContainer.style.display = 'block';
       
       // Show what's being recorded
       let statusMsg = '🔴 Recording: ';
@@ -53,41 +116,61 @@ async function startRecording() {
   } catch (error) {
     console.error('Error starting recording:', error);
     updateStatus('❌ ' + error.message, 'error');
+    forceStopContainer.style.display = 'none';
   }
 }
 
 async function stopRecording() {
   try {
-    updateStatus('⏳ Stopping recording...', 'processing');
+    const meetingTitle = meetingTitleInput.value.trim() || 'Meeting';
+    const recordingDuration = Math.round((Date.now() - recordingStartTime) / 1000);
     
-    // Send message to background to stop recording
-    const response = await chrome.runtime.sendMessage({ action: 'stopRecording' });
+    console.log('========================================');
+    console.log('🛑 STOP RECORDING INITIATED');
+    console.log('Title:', meetingTitle);
+    console.log('Duration:', recordingDuration + 's');
+    console.log('Timestamp:', new Date().toISOString());
+    console.log('========================================');
+    
+    updateStatus('⏳ Stopping and uploading...', 'processing');
+    
+    // Send message to background to stop recording and upload directly
+    // (title and duration are passed to offscreen for direct upload)
+    console.log('📤 Sending stopRecording message to background...');
+    const response = await chrome.runtime.sendMessage({ 
+      action: 'stopRecording',
+      title: meetingTitle,
+      duration: recordingDuration
+    });
+    
+    console.log('📥 Response from background:', response);
     
     if (!response || !response.success) {
+      console.error('❌ Stop recording failed:', response?.error);
       throw new Error(response?.error || 'Failed to stop recording');
     }
     
-    const recordingDuration = Math.round((Date.now() - recordingStartTime) / 1000);
     const audioSizeMB = (response.size / 1024 / 1024).toFixed(2);
+    console.log('========================================');
+    console.log('✅ RECORDING COMPLETE');
+    console.log('Duration:', recordingDuration + 's');
+    console.log('Size:', audioSizeMB + 'MB');
+    console.log('File:', response.filename);
+    console.log('========================================');
     
-    console.log(`Recording stopped. Duration: ${recordingDuration}s, Size: ${audioSizeMB}MB`);
+    updateStatus(`✅ Done! Committed as ${response.filename}`, 'success');
     
-    updateStatus('⏳ Processing and uploading...', 'processing');
+    // Show notification
+    chrome.notifications.create({
+      type: 'basic',
+      iconUrl: 'icons/icon48.png',
+      title: 'Transcript Committed',
+      message: `✅ ${response.filename} uploaded to GitHub`,
+      priority: 2
+    });
     
-    // Convert base64 data URL back to Blob
-    const base64Data = response.audioData.split(',')[1];
-    const binaryData = atob(base64Data);
-    const arrayBuffer = new Uint8Array(binaryData.length);
-    for (let i = 0; i < binaryData.length; i++) {
-      arrayBuffer[i] = binaryData.charCodeAt(i);
-    }
-    const audioBlob = new Blob([arrayBuffer], { type: 'audio/webm' });
-    
-    // Get meeting title
-    const meetingTitle = meetingTitleInput.value.trim() || 'Meeting';
-    
-    // Upload to backend
-    await uploadRecording(audioBlob, meetingTitle, recordingDuration);
+    // Reset after 3 seconds
+    setTimeout(resetUI, 3000);
     
   } catch (error) {
     console.error('Error stopping recording:', error);
@@ -96,49 +179,8 @@ async function stopRecording() {
   }
 }
 
-async function uploadRecording(audioBlob, meetingTitle, duration) {
-  const formData = new FormData();
-  formData.append('audio', audioBlob, 'recording.webm');
-  formData.append('title', meetingTitle);
-  formData.append('duration', duration);
-  
-  try {
-    updateStatus('📤 Uploading to server...', 'processing');
-    
-    const response = await fetch('http://localhost:5000/transcribe-and-commit', {
-      method: 'POST',
-      body: formData
-    });
-    
-    if (!response.ok) {
-      throw new Error(`Server error: ${response.status}`);
-    }
-    
-    const data = await response.json();
-    
-    if (data.success) {
-      updateStatus(`✅ Done! Committed as ${data.filename}`, 'success');
-      
-      // Show notification
-      chrome.notifications.create({
-        type: 'basic',
-        iconUrl: 'icons/icon48.png',
-        title: 'Transcript Committed',
-        message: `✅ ${data.filename} uploaded to GitHub`,
-        priority: 2
-      });
-      
-      // Reset after 3 seconds
-      setTimeout(resetUI, 3000);
-    } else {
-      throw new Error(data.error || 'Unknown error');
-    }
-  } catch (error) {
-    console.error('Upload error:', error);
-    updateStatus('❌ Upload failed: ' + error.message, 'error');
-    resetUI();
-  }
-}
+// uploadRecording function removed - now handled directly in offscreen.js
+// This avoids Chrome's message size limits (~64MB) for large recordings
 
 function updateStatus(message, type) {
   statusDiv.textContent = message;
@@ -148,6 +190,7 @@ function updateStatus(message, type) {
 function resetUI() {
   startBtn.disabled = false;
   stopBtn.disabled = true;
+  forceStopContainer.style.display = 'none';
   meetingTitleInput.value = '';
   updateStatus('Ready to record', 'idle');
 }

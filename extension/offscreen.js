@@ -38,7 +38,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
   
   if (request.action === 'stopMixedRecording') {
-    stopMixedRecording()
+    stopMixedRecording({
+      title: request.title,
+      duration: request.duration
+    })
       .then(result => sendResponse(result))
       .catch(error => {
         console.error('Stop recording error:', error);
@@ -50,7 +53,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
 async function startMixedRecording(streamId) {
   try {
-    console.log('=== OFFSCREEN: Starting recording with streamId:', streamId);
+    console.log('========================================');
+    console.log('🎬 OFFSCREEN: Starting mixed recording');
+    console.log('Timestamp:', new Date().toISOString());
+    console.log('Stream ID:', streamId);
+    console.log('========================================');
     
     // 1. Get tab audio stream using the streamId from background
     console.log('Getting tab audio stream...');
@@ -216,7 +223,7 @@ async function startMixedRecording(streamId) {
   }
 }
 
-async function stopMixedRecording() {
+async function stopMixedRecording(options = {}) {
   return new Promise((resolve) => {
     if (!mediaRecorder || mediaRecorder.state === 'inactive') {
       cleanup();
@@ -226,7 +233,7 @@ async function stopMixedRecording() {
     
     console.log('Stopping media recorder...');
     
-    mediaRecorder.onstop = () => {
+    mediaRecorder.onstop = async () => {
       console.log('=== OFFSCREEN: Recording stopped ===');
       console.log('Total chunks collected:', audioChunks.length);
       
@@ -248,28 +255,75 @@ async function stopMixedRecording() {
         return;
       }
       
-      // Convert to base64 for message passing
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        console.log('✅ Audio converted to base64, length:', reader.result.length);
-        const result = {
-          success: true,
-          audioData: reader.result,
-          size: audioBlob.size
-        };
+      // Upload directly to server instead of passing through messages
+      // This avoids Chrome's message size limits (~64MB, often fails at 10-20MB)
+      try {
+        console.log('========================================');
+        console.log('📤 UPLOAD STARTING');
+        console.log('Timestamp:', new Date().toISOString());
+        console.log('Audio size:', audioBlob.size, 'bytes', '(' + (audioBlob.size / 1024 / 1024).toFixed(2) + ' MB)');
+        console.log('Title:', options.title || 'Meeting');
+        console.log('Duration:', options.duration || Math.floor(audioBlob.size / 16000), 'seconds');
+        console.log('========================================');
         
+        const formData = new FormData();
+        formData.append('audio', audioBlob, 'recording.webm');
+        formData.append('title', options.title || 'Meeting');
+        formData.append('duration', options.duration || Math.floor(audioBlob.size / 16000)); // Estimate
+        
+        console.log('🌐 Sending HTTP POST to localhost:5000...');
+        const uploadStartTime = Date.now();
+        
+        const response = await fetch('http://localhost:5000/transcribe-and-commit', {
+          method: 'POST',
+          body: formData
+        });
+        
+        const uploadDuration = ((Date.now() - uploadStartTime) / 1000).toFixed(2);
+        console.log(`📡 HTTP response received (${uploadDuration}s)`);
+        console.log('Status:', response.status, response.statusText);
+        
+        if (!response.ok) {
+          const errorText = await response.text().catch(() => 'No error text');
+          console.error('❌ Server returned error status:', response.status);
+          console.error('Error body:', errorText);
+          throw new Error(`Server error: ${response.status} - ${errorText}`);
+        }
+        
+        console.log('📥 Parsing JSON response...');
+        const data = await response.json();
+        console.log('Response data:', data);
+        
+        if (data.success) {
+          console.log('========================================');
+          console.log('✅ UPLOAD SUCCESSFUL');
+          console.log('Filename:', data.filename);
+          console.log('Total time:', uploadDuration + 's');
+          console.log('========================================');
+          cleanup();
+          resolve({ 
+            success: true, 
+            filename: data.filename,
+            size: audioBlob.size
+          });
+        } else {
+          console.error('❌ Server returned success:false');
+          console.error('Error:', data.error);
+          throw new Error(data.error || 'Upload failed');
+        }
+      } catch (uploadError) {
+        console.error('========================================');
+        console.error('❌ UPLOAD FAILED');
+        console.error('Error type:', uploadError.name);
+        console.error('Error message:', uploadError.message);
+        console.error('Error stack:', uploadError.stack);
+        console.error('========================================');
         cleanup();
-        console.log('=== OFFSCREEN: Sending audio data back ===');
-        resolve(result);
-      };
-      
-      reader.onerror = (error) => {
-        console.error('FileReader error:', error);
-        cleanup();
-        resolve({ success: false, error: 'Failed to read audio data' });
-      };
-      
-      reader.readAsDataURL(audioBlob);
+        resolve({ 
+          success: false, 
+          error: 'Upload failed: ' + uploadError.message 
+        });
+      }
     };
     
     mediaRecorder.stop();
