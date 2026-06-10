@@ -146,7 +146,167 @@ def transcribe_and_commit():
             "error": str(e)
         }), 500
 
+@app.route('/transcribe-and-commit-separate', methods=['POST'])
+def transcribe_and_commit_separate():
+    """
+    Receives TWO audio files (mic + tab), transcribes separately, 
+    formats with "You:" and "Them:" labels like Granola
+    """
+    try:
+        meeting_title = request.form.get('title', 'Meeting')
+        duration = request.form.get('duration', 'unknown')
+        
+        logger.info(f"Processing SEPARATE recording: {meeting_title} ({duration}s)")
+        logger.info("Mode: Mic (You) + Tab (Them) - separate transcription")
+        
+        # Get both audio files
+        mic_file = request.files.get('mic_audio')
+        tab_file = request.files.get('tab_audio')
+        
+        if not mic_file and not tab_file:
+            return jsonify({"success": False, "error": "No audio files provided"}), 400
+        
+        transcripts = []
+        
+        # Transcribe microphone (You)
+        if mic_file:
+            logger.info("Transcribing MICROPHONE (You)...")
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.webm') as temp_mic:
+                mic_file.save(temp_mic.name)
+                temp_mic_path = temp_mic.name
+            
+            try:
+                mic_size = os.path.getsize(temp_mic_path)
+                logger.info(f"Mic audio: {mic_size} bytes ({mic_size / 1024 / 1024:.2f} MB)")
+                
+                mic_result = whisper_model.transcribe(temp_mic_path, fp16=False)
+                mic_text = mic_result["text"].strip()
+                mic_segments = mic_result.get('segments', [])
+                
+                logger.info(f"Mic transcription: {len(mic_segments)} segments, {len(mic_text)} chars")
+                
+                if mic_text:
+                    # Format with timestamps and "You:" labels
+                    for segment in mic_segments:
+                        start_time = int(segment['start'])
+                        text = segment['text'].strip()
+                        if text:
+                            transcripts.append({
+                                'time': start_time,
+                                'speaker': 'You',
+                                'text': text
+                            })
+            finally:
+                if os.path.exists(temp_mic_path):
+                    os.unlink(temp_mic_path)
+        
+        # Transcribe tab audio (Them)
+        if tab_file:
+            logger.info("Transcribing TAB AUDIO (Them)...")
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.webm') as temp_tab:
+                tab_file.save(temp_tab.name)
+                temp_tab_path = temp_tab.name
+            
+            try:
+                tab_size = os.path.getsize(temp_tab_path)
+                logger.info(f"Tab audio: {tab_size} bytes ({tab_size / 1024 / 1024:.2f} MB)")
+                
+                tab_result = whisper_model.transcribe(temp_tab_path, fp16=False)
+                tab_text = tab_result["text"].strip()
+                tab_segments = tab_result.get('segments', [])
+                
+                logger.info(f"Tab transcription: {len(tab_segments)} segments, {len(tab_text)} chars")
+                
+                if tab_text:
+                    # Format with timestamps and "Them:" labels
+                    for segment in tab_segments:
+                        start_time = int(segment['start'])
+                        text = segment['text'].strip()
+                        if text:
+                            transcripts.append({
+                                'time': start_time,
+                                'speaker': 'Them',
+                                'text': text
+                            })
+            finally:
+                if os.path.exists(temp_tab_path):
+                    os.unlink(temp_tab_path)
+        
+        if not transcripts:
+            logger.warning("⚠️ Both transcriptions are empty - no speech detected")
+            return jsonify({
+                "success": False,
+                "error": "No speech detected in either audio source"
+            }), 400
+        
+        # Sort by time to interleave the speakers
+        transcripts.sort(key=lambda x: x['time'])
+        
+        # Format transcript with speaker labels
+        formatted_lines = []
+        for item in transcripts:
+            formatted_lines.append(f"{item['speaker']}: {item['text']}")
+        
+        transcript_text = '\n'.join(formatted_lines)
+        
+        logger.info(f"Combined transcript: {len(transcripts)} segments, {len(transcript_text)} chars")
+        
+        # Format markdown content
+        content = f"""# {meeting_title}
+
+**Date:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  
+**Duration:** {duration} seconds  
+**Transcription:** Local Whisper (free, separate mic/tab)  
+**Format:** Speaker-attributed (You / Them)
+
+---
+
+## Transcript
+
+{transcript_text}
+
+---
+
+*This transcript was automatically generated with separate mic/tab transcription. "You" = your microphone, "Them" = other participants from tab audio.*
+"""
+        
+        # Commit to GitHub
+        logger.info("Committing to GitHub...")
+        g = Github(GITHUB_TOKEN)
+        repo = g.get_repo(GITHUB_REPO)
+        
+        timestamp = datetime.now().strftime('%Y-%m-%d-%H%M')
+        safe_title = meeting_title.lower().replace(' ', '-').replace('/', '-')[:50]
+        filename = f"{timestamp}-{safe_title}.md"
+        
+        repo.create_file(
+            path=f"transcripts/{filename}",
+            message=f"Add transcript (speaker-attributed): {meeting_title}",
+            content=content
+        )
+        
+        github_url = f"https://github.com/{GITHUB_REPO}/blob/main/transcripts/{filename}"
+        logger.info(f"✅ Committed: {filename} (with speaker attribution)")
+        
+        return jsonify({
+            "success": True,
+            "filename": filename,
+            "url": github_url,
+            "transcript_length": len(transcript_text),
+            "segments": len(transcripts),
+            "mode": "separate"
+        })
+    
+    except Exception as e:
+        logger.error(f"Error processing separate recording: {str(e)}", exc_info=True)
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
 if __name__ == '__main__':
     logger.info("Starting Transcription Server on http://localhost:5000")
+    logger.info(f"Target GitHub repo: {GITHUB_REPO}")
+    app.run(host='0.0.0.0', port=5000, debug=True)
     logger.info(f"Target GitHub repo: {GITHUB_REPO}")
     app.run(host='0.0.0.0', port=5000, debug=True)
