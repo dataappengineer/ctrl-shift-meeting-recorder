@@ -1,14 +1,14 @@
-// Offscreen document for mixing microphone + tab audio
+// Offscreen document for recording microphone + tab audio SEPARATELY
+// This allows us to label them as "You:" (mic) and "Them:" (tab) like Granola
 // Runs in a hidden document context with USER_MEDIA access
 
-console.log('Offscreen document loaded');
+console.log('Offscreen document loaded (Separate Recording Mode)');
 
 let audioContext = null;
-let micSource = null;
-let tabSource = null;
-let destination = null;
-let mediaRecorder = null;
-let audioChunks = [];
+let micRecorder = null;
+let tabRecorder = null;
+let micChunks = [];
+let tabChunks = [];
 let micStream = null;
 let tabStream = null;
 let analyser = null;
@@ -28,7 +28,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   console.log('Offscreen received message:', request.action);
   
   if (request.action === 'startMixedRecording') {
-    startMixedRecording(request.streamId)
+    startSeparateRecording(request.streamId)
       .then(result => sendResponse(result))
       .catch(error => {
         console.error('Start recording error:', error);
@@ -38,7 +38,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
   
   if (request.action === 'stopMixedRecording') {
-    stopMixedRecording({
+    stopSeparateRecording({
       title: request.title,
       duration: request.duration
     })
@@ -51,15 +51,16 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
 });
 
-async function startMixedRecording(streamId) {
+async function startSeparateRecording(streamId) {
   try {
     console.log('========================================');
-    console.log('🎬 OFFSCREEN: Starting mixed recording');
+    console.log('🎬 OFFSCREEN: Starting SEPARATE recording');
     console.log('Timestamp:', new Date().toISOString());
     console.log('Stream ID:', streamId);
+    console.log('Mode: Mic + Tab recorded separately for speaker attribution');
     console.log('========================================');
     
-    // 1. Get tab audio stream using the streamId from background
+    // 1. Get tab audio stream
     console.log('Getting tab audio stream...');
     try {
       tabStream = await navigator.mediaDevices.getUserMedia({
@@ -73,7 +74,6 @@ async function startMixedRecording(streamId) {
       console.log('✅ Tab audio stream obtained');
     } catch (tabError) {
       console.error('❌ Tab audio failed:', tabError);
-      // Continue with mic only if tab audio fails
       tabStream = null;
     }
     
@@ -92,23 +92,17 @@ async function startMixedRecording(streamId) {
     } catch (micError) {
       console.error('❌ Microphone access denied:', micError);
       console.warn('⚠️ IMPORTANT: You need to click "Allow" for microphone access to record your voice!');
-      console.warn('⚠️ Continuing with tab audio only (will only capture other participants)');
+      console.warn('⚠️ Continuing with tab audio only (will only capture "Them")');
       if (!tabStream) {
         throw new Error('Both mic and tab audio failed');
       }
       micStream = null;
     }
     
-    // 3. Create audio context for mixing
-    console.log('Creating audio context...');
+    // 3. Create audio context for monitoring
+    console.log('Creating audio context for monitoring...');
     audioContext = new AudioContext({ sampleRate: 44100 });
-    console.log('AudioContext created, state:', audioContext.state);
     await audioContext.resume();
-    console.log('AudioContext resumed, state:', audioContext.state);
-    
-    // Create destination (output)
-    destination = audioContext.createMediaStreamDestination();
-    console.log('Destination created, stream tracks:', destination.stream.getTracks().length);
     
     // Create analyzer to monitor audio levels
     analyser = audioContext.createAnalyser();
@@ -126,94 +120,68 @@ async function startMixedRecording(streamId) {
       }
     }, 3000);
     
-    // Store interval for cleanup
     window.levelCheckInterval = levelCheckInterval;
     
-    // 4. Connect tab audio if available
-    if (tabStream) {
-      console.log('Creating tab audio source...');
-      console.log('Tab stream tracks:', tabStream.getTracks().length);
-      tabStream.getTracks().forEach((track, i) => {
-        console.log(`  Tab track ${i}: kind=${track.kind}, enabled=${track.enabled}, readyState=${track.readyState}, muted=${track.muted}`);
-      });
-      
-      tabSource = audioContext.createMediaStreamSource(tabStream);
-      console.log('Tab source created');
-      tabSource.connect(destination);
-      tabSource.connect(analyser); // Connect to analyser for monitoring
-      // Also play tab audio to speakers so user can hear other participants
-      tabSource.connect(audioContext.destination);
-      console.log('✅ Tab audio connected to mixer');
-    }
-    
-    // 5. Connect microphone if available
+    // 4. Create SEPARATE recorders for mic and tab
     if (micStream) {
-      console.log('Creating mic audio source...');
-      console.log('Mic stream tracks:', micStream.getTracks().length);
-      micStream.getTracks().forEach((track, i) => {
-        console.log(`  Mic track ${i}: kind=${track.kind}, enabled=${track.enabled}, readyState=${track.readyState}, muted=${track.muted}`);
-      });
+      console.log('Creating MIC recorder...');
+      micRecorder = new MediaRecorder(micStream, { mimeType: 'audio/webm' });
+      micChunks = [];
       
-      micSource = audioContext.createMediaStreamSource(micStream);
-      console.log('Mic source created');
-      micSource.connect(destination);
-      micSource.connect(analyser); // Connect to analyser for monitoring
-      console.log('✅ Microphone connected to mixer');
+      micRecorder.ondataavailable = (e) => {
+        if (e.data.size > 0) {
+          micChunks.push(e.data);
+          console.log(`🎤 Mic chunk ${micChunks.length}:`, e.data.size, 'bytes');
+        }
+      };
+      
+      micRecorder.onerror = (e) => console.error('Mic recorder error:', e);
+      micRecorder.start(1000);
+      console.log('✅ Mic recording started');
     }
     
-    // 6. Create MediaRecorder with mixed stream
-    console.log('Creating MediaRecorder...');
-    console.log('Destination stream tracks:', destination.stream.getTracks().length);
-    destination.stream.getTracks().forEach((track, i) => {
-      console.log(`  Track ${i}: kind=${track.kind}, enabled=${track.enabled}, readyState=${track.readyState}`);
-    });
-    
-    // Check if stream is actually producing audio
-    if (destination.stream.getTracks().length === 0) {
-      throw new Error('Destination stream has no tracks!');
+    if (tabStream) {
+      console.log('Creating TAB recorder...');
+      tabRecorder = new MediaRecorder(tabStream, { mimeType: 'audio/webm' });
+      tabChunks = [];
+      
+      tabRecorder.ondataavailable = (e) => {
+        if (e.data.size > 0) {
+          tabChunks.push(e.data);
+          console.log(`🔊 Tab chunk ${tabChunks.length}:`, e.data.size, 'bytes');
+        }
+      };
+      
+      tabRecorder.onerror = (e) => console.error('Tab recorder error:', e);
+      tabRecorder.start(1000);
+      console.log('✅ Tab recording started');
+      
+      // Play tab audio to speakers so user can hear other participants
+      const tabSource = audioContext.createMediaStreamSource(tabStream);
+      tabSource.connect(audioContext.destination);
+      tabSource.connect(analyser);
     }
-    
-    const audioTracks = destination.stream.getAudioTracks();
-    if (audioTracks.length === 0) {
-      throw new Error('Destination stream has no audio tracks!');
-    }
-    
-    console.log('Audio tracks ready:', audioTracks.length);
-    
-    mediaRecorder = new MediaRecorder(destination.stream, { mimeType: 'audio/webm' });
-    audioChunks = [];
-    
-    mediaRecorder.ondataavailable = (e) => {
-      if (e.data.size > 0) {
-        audioChunks.push(e.data);
-        console.log(`📼 Audio chunk ${audioChunks.length}:`, e.data.size, 'bytes (total:', audioChunks.reduce((sum, chunk) => sum + chunk.size, 0), 'bytes)');
-      } else {
-        console.warn('⚠️ Received empty audio chunk');
-      }
-    };
-    
-    mediaRecorder.onerror = (e) => {
-      console.error('MediaRecorder error:', e);
-    };
-    
-    mediaRecorder.start(1000); // Collect data every second
-    console.log('✅ Mixed recording started');
-    console.log('MediaRecorder state:', mediaRecorder.state);
-    console.log('MediaRecorder mimeType:', mediaRecorder.mimeType);
     
     // Build status message
     const sources = [];
-    if (micStream) sources.push('Microphone');
-    if (tabStream) sources.push('Tab Audio');
+    if (micStream) sources.push('Microphone (You)');
+    if (tabStream) sources.push('Tab Audio (Them)');
     const message = sources.length > 0 
       ? `Recording ${sources.join(' + ')}` 
       : 'Recording started';
+    
+    console.log('========================================');
+    console.log('✅ SEPARATE RECORDING ACTIVE');
+    console.log('Mic:', micStream ? 'YES' : 'NO');
+    console.log('Tab:', tabStream ? 'YES' : 'NO');
+    console.log('========================================');
     
     return { 
       success: true, 
       message: message,
       hasTabAudio: !!tabStream,
-      hasMic: !!micStream
+      hasMic: !!micStream,
+      mode: 'separate'
     };
     
   } catch (error) {
@@ -223,117 +191,130 @@ async function startMixedRecording(streamId) {
   }
 }
 
-async function stopMixedRecording(options = {}) {
-  return new Promise((resolve) => {
-    if (!mediaRecorder || mediaRecorder.state === 'inactive') {
-      cleanup();
-      resolve({ success: false, error: 'No active recording' });
-      return;
+async function stopSeparateRecording(options = {}) {
+  console.log('========================================');
+  console.log('🛑 OFFSCREEN: Stopping SEPARATE recording');
+  console.log('Timestamp:', new Date().toISOString());
+  console.log('========================================');
+  
+  const promises = [];
+  
+  // Stop mic recorder
+  if (micRecorder && micRecorder.state !== 'inactive') {
+    console.log('Stopping MIC recorder...');
+    const micPromise = new Promise((resolve) => {
+      micRecorder.onstop = () => {
+        console.log('Mic stopped, chunks:', micChunks.length);
+        resolve();
+      };
+      micRecorder.stop();
+    });
+    promises.push(micPromise);
+  }
+  
+  // Stop tab recorder
+  if (tabRecorder && tabRecorder.state !== 'inactive') {
+    console.log('Stopping TAB recorder...');
+    const tabPromise = new Promise((resolve) => {
+      tabRecorder.onstop = () => {
+        console.log('Tab stopped, chunks:', tabChunks.length);
+        resolve();
+      };
+      tabRecorder.stop();
+    });
+    promises.push(tabPromise);
+  }
+  
+  // Wait for both to stop
+  await Promise.all(promises);
+  
+  console.log('Both recorders stopped');
+  console.log('Mic chunks:', micChunks.length, 'Tab chunks:', tabChunks.length);
+  
+  // Check if we have any audio
+  if (micChunks.length === 0 && tabChunks.length === 0) {
+    console.error('❌ No audio chunks recorded from either source!');
+    cleanup();
+    return { success: false, error: 'No audio data recorded' };
+  }
+  
+  // Create blobs
+  const micBlob = micChunks.length > 0 ? new Blob(micChunks, { type: 'audio/webm' }) : null;
+  const tabBlob = tabChunks.length > 0 ? new Blob(tabChunks, { type: 'audio/webm' }) : null;
+  
+  console.log('Mic blob:', micBlob ? `${micBlob.size} bytes (${(micBlob.size / 1024 / 1024).toFixed(2)} MB)` : 'none');
+  console.log('Tab blob:', tabBlob ? `${tabBlob.size} bytes (${(tabBlob.size / 1024 / 1024).toFixed(2)} MB)` : 'none');
+  
+  // Upload to server
+  try {
+    console.log('========================================');
+    console.log('📤 UPLOAD STARTING (Separate files)');
+    console.log('========================================');
+    
+    const formData = new FormData();
+    if (micBlob) formData.append('mic_audio', micBlob, 'mic.webm');
+    if (tabBlob) formData.append('tab_audio', tabBlob, 'tab.webm');
+    formData.append('title', options.title || 'Meeting');
+    formData.append('duration', options.duration || 0);
+    formData.append('mode', 'separate'); // Tell server we're sending separate files
+    
+    console.log('🌐 Sending HTTP POST to localhost:5000/transcribe-and-commit-separate...');
+    const uploadStartTime = Date.now();
+    
+    const response = await fetch('http://localhost:5000/transcribe-and-commit-separate', {
+      method: 'POST',
+      body: formData
+    });
+    
+    const uploadDuration = ((Date.now() - uploadStartTime) / 1000).toFixed(2);
+    console.log(`📡 HTTP response received (${uploadDuration}s)`);
+    console.log('Status:', response.status, response.statusText);
+    
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => 'No error text');
+      console.error('❌ Server returned error status:', response.status);
+      console.error('Error body:', errorText);
+      throw new Error(`Server error: ${response.status} - ${errorText}`);
     }
     
-    console.log('Stopping media recorder...');
+    const data = await response.json();
+    console.log('Response data:', data);
     
-    mediaRecorder.onstop = async () => {
-      console.log('=== OFFSCREEN: Recording stopped ===');
-      console.log('Total chunks collected:', audioChunks.length);
-      
-      if (audioChunks.length === 0) {
-        console.error('❌ No audio chunks were recorded!');
-        cleanup();
-        resolve({ success: false, error: 'No audio data recorded' });
-        return;
-      }
-      
-      // Create blob from chunks
-      const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
-      console.log('Audio blob created, size:', audioBlob.size, 'bytes');
-      
-      if (audioBlob.size === 0) {
-        console.error('❌ Audio blob is empty!');
-        cleanup();
-        resolve({ success: false, error: 'Audio blob is empty' });
-        return;
-      }
-      
-      // Upload directly to server instead of passing through messages
-      // This avoids Chrome's message size limits (~64MB, often fails at 10-20MB)
-      try {
-        console.log('========================================');
-        console.log('📤 UPLOAD STARTING');
-        console.log('Timestamp:', new Date().toISOString());
-        console.log('Audio size:', audioBlob.size, 'bytes', '(' + (audioBlob.size / 1024 / 1024).toFixed(2) + ' MB)');
-        console.log('Title:', options.title || 'Meeting');
-        console.log('Duration:', options.duration || Math.floor(audioBlob.size / 16000), 'seconds');
-        console.log('========================================');
-        
-        const formData = new FormData();
-        formData.append('audio', audioBlob, 'recording.webm');
-        formData.append('title', options.title || 'Meeting');
-        formData.append('duration', options.duration || Math.floor(audioBlob.size / 16000)); // Estimate
-        
-        console.log('🌐 Sending HTTP POST to localhost:5000...');
-        const uploadStartTime = Date.now();
-        
-        const response = await fetch('http://localhost:5000/transcribe-and-commit', {
-          method: 'POST',
-          body: formData
-        });
-        
-        const uploadDuration = ((Date.now() - uploadStartTime) / 1000).toFixed(2);
-        console.log(`📡 HTTP response received (${uploadDuration}s)`);
-        console.log('Status:', response.status, response.statusText);
-        
-        if (!response.ok) {
-          const errorText = await response.text().catch(() => 'No error text');
-          console.error('❌ Server returned error status:', response.status);
-          console.error('Error body:', errorText);
-          throw new Error(`Server error: ${response.status} - ${errorText}`);
-        }
-        
-        console.log('📥 Parsing JSON response...');
-        const data = await response.json();
-        console.log('Response data:', data);
-        
-        if (data.success) {
-          console.log('========================================');
-          console.log('✅ UPLOAD SUCCESSFUL');
-          console.log('Filename:', data.filename);
-          console.log('Total time:', uploadDuration + 's');
-          console.log('========================================');
-          cleanup();
-          resolve({ 
-            success: true, 
-            filename: data.filename,
-            size: audioBlob.size
-          });
-        } else {
-          console.error('❌ Server returned success:false');
-          console.error('Error:', data.error);
-          throw new Error(data.error || 'Upload failed');
-        }
-      } catch (uploadError) {
-        console.error('========================================');
-        console.error('❌ UPLOAD FAILED');
-        console.error('Error type:', uploadError.name);
-        console.error('Error message:', uploadError.message);
-        console.error('Error stack:', uploadError.stack);
-        console.error('========================================');
-        cleanup();
-        resolve({ 
-          success: false, 
-          error: 'Upload failed: ' + uploadError.message 
-        });
-      }
+    if (data.success) {
+      console.log('========================================');
+      console.log('✅ UPLOAD SUCCESSFUL');
+      console.log('Filename:', data.filename);
+      console.log('Mode: Separate transcription with speaker labels');
+      console.log('Total time:', uploadDuration + 's');
+      console.log('========================================');
+      cleanup();
+      return { 
+        success: true, 
+        filename: data.filename,
+        micSize: micBlob ? micBlob.size : 0,
+        tabSize: tabBlob ? tabBlob.size : 0
+      };
+    } else {
+      console.error('❌ Server returned success:false');
+      console.error('Error:', data.error);
+      throw new Error(data.error || 'Upload failed');
+    }
+  } catch (uploadError) {
+    console.error('========================================');
+    console.error('❌ UPLOAD FAILED');
+    console.error('Error:', uploadError.message);
+    console.error('========================================');
+    cleanup();
+    return { 
+      success: false, 
+      error: 'Upload failed: ' + uploadError.message 
     };
-    
-    mediaRecorder.stop();
-  });
+  }
 }
 
 function cleanup() {
   console.log('Cleaning up audio resources...');
   
-  // Clear audio level monitoring
   if (window.levelCheckInterval) {
     clearInterval(window.levelCheckInterval);
     window.levelCheckInterval = null;
@@ -349,16 +330,6 @@ function cleanup() {
     tabStream = null;
   }
   
-  if (micSource) {
-    micSource.disconnect();
-    micSource = null;
-  }
-  
-  if (tabSource) {
-    tabSource.disconnect();
-    tabSource = null;
-  }
-  
   if (analyser) {
     analyser.disconnect();
     analyser = null;
@@ -368,11 +339,11 @@ function cleanup() {
     audioContext.close();
   }
   
-  destination = null;
   audioContext = null;
-  audioChunks = [];
-  mediaRecorder = null;
+  micChunks = [];
+  tabChunks = [];
+  micRecorder = null;
+  tabRecorder = null;
   
   console.log('Cleanup complete');
 }
-
